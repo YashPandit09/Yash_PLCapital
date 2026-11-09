@@ -224,6 +224,14 @@ python -m pytest tests/ -v
 streamlit run streamlit_app.py
 ```
 
+### 6. Run the FastAPI REST Server (Bonus)
+
+```powershell
+uvicorn src.api:app --reload --port 8000
+```
+
+Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
+
 ---
 
 ## Design Decisions & Technical Highlights
