@@ -95,7 +95,7 @@ Exercise_PL_AI_Engineer/
 │   ├── cli.py                 # Interactive & one-shot CLI
 │   ├── db.py                  # In-memory SQLite loader & schema descriptor
 │   ├── exposure_tool.py       # Deterministic sector exposure calculator
-│   ├── llm.py                 # Gemini wrapper with retries & backoff
+│   ├── llm.py                 # Multi-provider LLM wrapper (Gemini, Groq, OpenAI) with retries & backoff
 │   └── sql_tool.py            # Text-to-SQL tool & safety validator
 ├── tests/
 │   ├── __init__.py
@@ -136,20 +136,34 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure API Key
+### 3. Configure LLM Provider & API Keys
 
-Copy `.env.example` to `.env` and add your Gemini API key from [Google AI Studio](https://aistudio.google.com/):
+The agent supports multiple LLM providers via a unified interface in [`src/llm.py`](file:///c:/Users/Yash/Downloads/Exercise_PL_AI_Engineer/src/llm.py):
+- **Google Gemini (Default)**: Uses the `google-genai` SDK.
+- **Groq / OpenAI-Compatible**: Uses the `openai` SDK with customizable base URL and model.
+
+Copy `.env.example` to `.env`:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Edit `.env`:
+#### Option A: Google Gemini (Default)
 ```ini
+LLM_PROVIDER=gemini
 GEMINI_API_KEY=AIzaSy...your_key_here
+GEMINI_MODEL=gemini-3.5-flash  # optional override (default: gemini-3.5-flash)
 ```
 
-*(Note: You can still run the entire test suite and offline evaluator without an API key).*
+#### Option B: Groq (Fast OpenAI-Compatible Inference)
+```ini
+LLM_PROVIDER=groq
+GROQ_API_KEY=gsk_...your_groq_key_here
+LLM_MODEL=llama-3.3-70b-versatile  # or openai/gpt-oss-120b
+LLM_BASE_URL=https://api.groq.com/openai/v1
+```
+
+*(Note: You can still run the entire test suite and offline evaluator without any API key).*
 
 ---
 
@@ -261,9 +275,10 @@ Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
 ## Evaluation Results
 
 > [!IMPORTANT]
-> **Evaluation Transparency & Live Verification**:
-> - **Cleaned Dynamic Prompt Run (Current)**: Under the generic, un-overfitted prompt (dynamic runtime schema extraction and zero ground-truth few-shots), the live agent scores **6/10 (60%)** against the rigid evaluation harness using `gemini-3.5-flash-lite`. All 8 generated SQL queries are syntactically valid and execute cleanly. Failures in Q5–Q8 stem from the harness's strict tuple/column-count comparison (e.g. Q5 returning `(symbol, company, cost_basis, quantity, purchase_price)` instead of `(holding_id, ...)` and Q6 omitting an unrequested `ORDER BY`).
-> - **Initial Baseline Run (Earlier Prompt)**: Live 10/10 was recorded on an earlier prompt version prior to the strict separation of few-shot examples and removal of formatting rules.
+> **Evaluation Transparency & Model Lineage**:
+> - **Groq Live Run (`openai/gpt-oss-120b` / `llama-3.3-70b-versatile`)**: Executed with `LLM_PROVIDER=groq` using the OpenAI-compatible Groq API endpoint.
+> - **Gemini Live Run (`gemini-3.5-flash-lite`)**: Executed with `LLM_PROVIDER=gemini` on the dynamic runtime schema and generic un-overfitted prompt.
+> - **Initial Baseline Run (`gemini-3.5-flash`)**: Live 10/10 was recorded on an earlier prompt version prior to the strict separation of few-shot examples and removal of formatting rules.
 > - **Offline Mode (Harness Check)**: Validates the harness, database schema, SQL execution, query plans, and independent exposure calculations without network dependencies, but does not test real-time LLM SQL generation.
 
 ### 1. Harness Sanity Check (Offline Mode – 10/10 PASS)
