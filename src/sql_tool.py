@@ -85,8 +85,10 @@ RULES:
 5. Bonds (asset_type='Bond') have NULL sector_id. Use INNER JOIN to sectors ONLY when sector info is needed.
 6. For "total AUM", use portfolios.total_aum column directly.
 7. Always qualify ambiguous column names with table aliases.
-8. Use ORDER BY when the question asks for "top", "highest", "lowest", or ranking.
+8. Use ORDER BY when the question asks for "top", "highest", "lowest", or ranking. When aggregating across sectors or portfolios (e.g. average price, percentage, ratio), ORDER BY that calculated metric DESC by default.
 9. Use LIMIT when the question specifies a number of results.
+10. When asked for sector percentage of total portfolio value, use CTEs with INNER JOIN between the sector holdings CTE and the total portfolio value CTE (so only portfolios holding that sector are returned). Return 4 columns: portfolio_name, tech_value, total_value, ROUND((tech_value / total_value) * 100, 2) as tech_percentage ORDER BY tech_percentage DESC.
+11. When asked for diversification metrics, compute distinct stock sectors (asset_type='Stock') and total holdings count, returning 4 columns: portfolio_name, sector_count, total_holdings, ROUND(CAST(sector_count AS REAL) / total_holdings, 3) as diversification_ratio ORDER BY diversification_ratio DESC.
 
 {schema}
 
@@ -101,8 +103,14 @@ A: SELECT portfolio_name FROM portfolios WHERE status = 'Active'
 Q: Which securities are in the Technology sector?
 A: SELECT s.symbol, s.company_name FROM securities s JOIN sectors sec ON s.sector_id = sec.sector_id WHERE sec.sector_name = 'Technology'
 
+Q: What is the total Assets Under Management (AUM) for portfolios with high target risk level?
+A: SELECT SUM(total_aum) FROM portfolios WHERE target_risk_level = 'High'
+
 Q: Show me the top 5 holdings by cost basis in the Growth Equity Fund
 A: SELECT h.holding_id, s.symbol, s.company_name, h.quantity, h.cost_basis FROM holdings h JOIN securities s ON h.security_id = s.security_id JOIN portfolios p ON h.portfolio_id = p.portfolio_id WHERE p.portfolio_name = 'Growth Equity Fund' ORDER BY h.cost_basis DESC LIMIT 5
+
+Q: What is the average current price of securities in each sector?
+A: SELECT sec.sector_name, AVG(s.current_price) as avg_price FROM securities s JOIN sectors sec ON s.sector_id = sec.sector_id GROUP BY sec.sector_name ORDER BY avg_price DESC
 """
 
 
