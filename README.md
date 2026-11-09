@@ -313,6 +313,20 @@ Q10 [medium] (exposure_calculator): Calculate the sector exposure breakdown for 
 ================================================================================
 ```
 
+### Harness Sanity Check (Offline Mode)
+Run without consuming API quota:
+```text
+================================================================================
+  Portfolio Analytics Agent – Evaluation (OFFLINE)
+  Questions: 10
+================================================================================
+  Overall: 10/10 (100%)
+  text2sql: 8/8
+  exposure_calculator: 2/2
+  SQL Optimization: 4/8 queries optimal, 4 flagged for table scans
+================================================================================
+```
+
 ---
 
 ## Known Limitations & Future Roadmap
