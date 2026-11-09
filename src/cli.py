@@ -19,8 +19,13 @@ def _print_result(result: AgentResult) -> None:
     print()
     print(f"  Tool: {result.tool_used}")
 
-    if result.tool_used == "sql_query" and result.tool_input:
+    if result.tool_used == "sql_query" and result.tool_input and not result.error:
         print(f"  SQL:  {result.tool_input}")
+    elif result.tool_used == "sql_query" and result.tool_input and result.error:
+        input_str = str(result.tool_input).strip()
+        if input_str.upper().startswith(("SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "DROP")):
+            preview = input_str if len(input_str) <= 80 else input_str[:77] + "..."
+            print(f"  Attempted SQL: {preview}")
     elif result.tool_used == "exposure_calculator" and result.tool_input:
         params = result.tool_input
         if isinstance(params, dict):

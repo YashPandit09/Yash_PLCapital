@@ -121,20 +121,20 @@ def _build_system_prompt() -> str:
 
 
 def _strip_sql(raw: str) -> str:
-    """Strip markdown fences, trailing semicolons, and whitespace from LLM output."""
+    """Extract and clean SQL from LLM output, stripping fences and conversational prose."""
     text = raw.strip()
-    # Remove ```sql ... ``` fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first and last lines if they are fences
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    # Check for markdown code fence anywhere in the output
+    match = re.search(r"```(?:sql)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+    else:
+        # If model outputs prose followed by SQL, find start of SELECT or WITH
+        select_match = re.search(r"\b(SELECT|WITH)\b[\s\S]*", text, re.IGNORECASE)
+        if select_match:
+            text = select_match.group(0).strip()
+
     # Remove trailing semicolon
-    text = text.rstrip(";").strip()
-    return text
+    return text.rstrip(";").strip()
 
 
 # ──────────────────────────────────────────────

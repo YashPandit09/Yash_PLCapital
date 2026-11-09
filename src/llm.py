@@ -83,6 +83,7 @@ def generate(
     config = types.GenerateContentConfig(
         temperature=temperature,
         max_output_tokens=max_output_tokens,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
     if system_instruction:
         config.system_instruction = system_instruction

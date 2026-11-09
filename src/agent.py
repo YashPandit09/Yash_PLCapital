@@ -217,6 +217,8 @@ class PortfolioAgent:
 
         if tool_name == "exposure_calculator":
             result = self._run_exposure(q, portfolio_name)
+        elif tool_name == "hybrid":
+            result = self._run_hybrid(q)
         elif tool_name == "sql_query":
             result = self._run_sql(q)
         else:
