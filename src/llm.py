@@ -23,14 +23,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
 _client: Optional[Any] = None
-_CANDIDATE_MODELS = [
-    os.environ.get("GEMINI_MODEL", "gemini-3.5-flash"),
-    "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
-]
-_MODEL_NAME = _CANDIDATE_MODELS[0]
-_MAX_RETRIES = 3
-_INITIAL_BACKOFF = 1.5  # seconds
+_MAX_RETRIES = 2
+_INITIAL_BACKOFF = 2.0  # seconds
+
+
+def _get_candidate_models() -> list[str]:
+    """Return candidate Gemini models in priority order, respecting GEMINI_MODEL env var."""
+    env_model = os.environ.get("GEMINI_MODEL", "").strip()
+    primary = env_model if env_model else "gemini-3.5-flash"
+    candidates = [primary, "gemini-3.5-flash-lite", "gemini-3.8-flash"]
+    seen: set[str] = set()
+    return [m for m in candidates if m and not (m in seen or seen.add(m))]
 
 
 def _get_client() -> Any:
@@ -39,7 +42,7 @@ def _get_client() -> Any:
     if _client is not None:
         return _client
 
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key or api_key == "your_key_here":
         raise RuntimeError(
             "GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.\n"
@@ -49,7 +52,7 @@ def _get_client() -> Any:
     from google import genai  # type: ignore[import-untyped]
 
     _client = genai.Client(api_key=api_key)
-    logger.info("Gemini client initialised (model=%s)", _MODEL_NAME)
+    logger.info("Gemini client initialised")
     return _client
 
 
@@ -62,7 +65,7 @@ def generate(
 ) -> str:
     """Call Gemini and return the text response.
 
-    Retries up to ``_MAX_RETRIES`` times with exponential backoff on 429 / 5xx.
+    Retries transient failures with quick backoff; fails fast on quota exhaustion.
 
     Args:
         prompt: The user prompt.
@@ -74,30 +77,34 @@ def generate(
         The generated text, stripped of leading/trailing whitespace.
 
     Raises:
-        RuntimeError: If API key is missing or all retries exhausted.
+        RuntimeError: If API key is missing or quota is exhausted.
     """
-    global _MODEL_NAME
     client = _get_client()
     from google.genai import types  # type: ignore[import-untyped]
 
-    config = types.GenerateContentConfig(
-        temperature=temperature,
-        max_output_tokens=max_output_tokens,
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-    )
-    if system_instruction:
-        config.system_instruction = system_instruction
-
+    candidate_models = _get_candidate_models()
     last_error: Optional[Exception] = None
-    for model in _CANDIDATE_MODELS:
+
+    for model in candidate_models:
+        # Lite models do not support thinking_budget
+        use_thinking = "lite" not in model.lower()
+
         for attempt in range(1, _MAX_RETRIES + 1):
+            config = types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+            if use_thinking:
+                config.thinking_config = types.ThinkingConfig(thinking_budget=0)
+            if system_instruction:
+                config.system_instruction = system_instruction
+
             try:
                 response = client.models.generate_content(
                     model=model,
                     contents=prompt,
                     config=config,
                 )
-                _MODEL_NAME = model
                 text = response.text or ""
                 return text.strip()
 
@@ -106,47 +113,72 @@ def generate(
                 err_str = str(exc)
                 err_lower = err_str.lower()
 
-                # Check for depleted credits (HTTP 402) - non-retryable
+                # 1. Depleted credits (HTTP 402) - fail immediately without hang
                 if "402" in err_lower or "credits are depleted" in err_lower or "prepayment" in err_lower:
                     raise RuntimeError(
                         "Your Gemini API prepayment credits are depleted. "
                         "Please go to Google AI Studio at https://ai.studio/projects to manage billing."
                     )
 
-                # Check for rate-limiting / quota exhaustion
-                elif (
+                # 2. Daily request quota limit exceeded - fail immediately without hang
+                if (
+                    "per day" in err_lower
+                    or "daily" in err_lower
+                    or "limit: 20" in err_lower
+                    or "requests per day" in err_lower
+                ):
+                    raise RuntimeError(
+                        "Gemini API free-tier daily request quota exceeded for this model/project. "
+                        "Please retry later or provide an API key with active quota."
+                    )
+
+                # 3. Model parameter error (400 INVALID_ARGUMENT for thinking_config): retry once without it
+                if "400" in err_lower and ("thinking" in err_lower or "invalid_argument" in err_lower):
+                    if use_thinking:
+                        logger.warning("Thinking config unsupported on %s, retrying without thinking budget", model)
+                        use_thinking = False
+                        continue
+                    # Non-thinking 400 error
+                    raise RuntimeError(f"Gemini API parameter error: {exc}") from exc
+
+                # 4. Transient rate-limiting (429 / RESOURCE_EXHAUSTED)
+                if (
                     "429" in err_lower
                     or "resource_exhausted" in err_lower
                     or "quota" in err_lower
                     or "limit exceeded" in err_lower
                 ):
                     import re
-                    # Look for Google's recommended retry delay (e.g. retry in 23s or retryDelay: '23s')
+                    # Check for large wait times (e.g. retry in 19h... or retryDelay: '60000s')
                     match = re.search(r"retry(?:\s+in\s+|Delay['\":\s]+)(\d+)", err_str, re.IGNORECASE)
-                    if match:
-                        wait = float(match.group(1)) + 2.0
-                    else:
-                        wait = max(15.0, _INITIAL_BACKOFF * (2 ** (attempt - 1)))
+                    wait = float(match.group(1)) if match else _INITIAL_BACKOFF
+
+                    # If wait is large (> 20s) or attempt limit reached, fail fast without hanging 60+ seconds
+                    if wait > 20.0 or attempt >= _MAX_RETRIES:
+                        raise RuntimeError(
+                            f"Gemini API rate limit exceeded ({model}): {err_str[:120]}. "
+                            "Please try again in a few moments."
+                        )
 
                     logger.warning(
-                        "Gemini rate limit on %s (attempt %d/%d): waiting %.1fs before retry...",
+                        "Gemini rate limit on %s (attempt %d/%d): waiting %.1fs...",
                         model,
                         attempt,
                         _MAX_RETRIES,
                         wait,
                     )
                     time.sleep(wait)
+                    continue
 
-                # Check if model not found or service unavailable -> try next candidate model
-                elif "404" in err_lower or "not_found" in err_lower or "503" in err_lower:
+                # 5. Model not found or service temporarily unavailable -> try next model
+                if "404" in err_lower or "not_found" in err_lower or "503" in err_lower:
                     logger.warning("Model %s unavailable (%s), trying next candidate", model, exc)
                     break
 
-                else:
-                    raise RuntimeError(f"Gemini API error: {exc}") from exc
+                raise RuntimeError(f"Gemini API error: {exc}") from exc
 
     raise RuntimeError(
-        f"Gemini API failed after {_MAX_RETRIES} retries: {last_error}"
+        f"Gemini API request failed across all models: {last_error}"
     )
 
 
