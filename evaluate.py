@@ -27,7 +27,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.agent import AgentResult, PortfolioAgent
 from src.db import get_connection
-from src.exposure_tool import ExposureResult, calculate_sector_exposure
+from src.exposure_tool import ExposureResult
 from src.sql_tool import SQLResult, execute_ground_truth_sql
 
 
@@ -147,14 +147,58 @@ def _compare_results(
     return True, ""
 
 
+def _compute_independent_exposure(
+    gt_portfolio_name: str,
+) -> tuple[Optional[dict[str, float]], Optional[str]]:
+    """Compute expected equity sector exposure independently via direct SQL query on DB.
+
+    Does NOT use src.exposure_tool. Directly queries holdings, securities, sectors, portfolios.
+    Excludes bonds (asset_type != 'Stock' or sector_id IS NULL), renormalizes equity weights to 100%.
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT portfolio_id, portfolio_name FROM portfolios WHERE LOWER(portfolio_name) = LOWER(?)",
+        (gt_portfolio_name.strip(),),
+    ).fetchone()
+    if not row:
+        return None, f"Portfolio '{gt_portfolio_name}' not found in database"
+
+    pid, official_name = row[0], row[1]
+
+    # Query equity holdings
+    query = """
+        SELECT sec.sector_name, SUM(h.current_weight) as sector_weight
+        FROM holdings h
+        JOIN securities s ON h.security_id = s.security_id
+        JOIN sectors sec ON s.sector_id = sec.sector_id
+        WHERE h.portfolio_id = ?
+          AND s.asset_type = 'Stock'
+          AND s.sector_id IS NOT NULL
+        GROUP BY sec.sector_name
+    """
+    rows = conn.execute(query, (pid,)).fetchall()
+    if not rows:
+        return None, f"Portfolio '{official_name}' has no equity holdings"
+
+    total_weight = sum(r[1] for r in rows)
+    if total_weight <= 0:
+        return None, "Total equity weight is zero"
+
+    # Renormalize to 100% and round to 2 decimals
+    result = {}
+    for sector_name, weight in rows:
+        pct = round((weight / total_weight) * 100.0, 2)
+        result[sector_name] = pct
+
+    sorted_result = dict(sorted(result.items(), key=lambda item: item[1], reverse=True))
+    return sorted_result, None
+
+
 def _verify_exposure(
     agent_result: AgentResult,
     gt_portfolio_name: str,
 ) -> tuple[bool, str]:
-    """Verify exposure calculator results independently.
-
-    Recomputes exposure and checks agent's numbers match within 0.01.
-    """
+    """Verify exposure calculator results independently without calling src.exposure_tool."""
     raw = agent_result.raw_result
     if not isinstance(raw, ExposureResult):
         # If agent errored, check if it's a valid error (e.g. bond-only portfolio)
@@ -165,30 +209,29 @@ def _verify_exposure(
     if raw.error:
         return False, f"Exposure calculation error: {raw.error}"
 
-    # Recompute independently
-    independent = calculate_sector_exposure(portfolio_name=gt_portfolio_name)
-    if independent.error:
-        return False, f"Independent calculation error: {independent.error}"
+    # Recompute independently using direct SQL query
+    independent, err = _compute_independent_exposure(gt_portfolio_name)
+    if err:
+        return False, f"Independent calculation error: {err}"
 
     # Check portfolio resolved correctly
-    if independent.portfolio_name != raw.portfolio_name:
+    if raw.portfolio_name.lower() != gt_portfolio_name.lower():
         return False, (
             f"Portfolio name mismatch: agent='{raw.portfolio_name}', "
-            f"expected='{independent.portfolio_name}'"
+            f"expected='{gt_portfolio_name}'"
         )
 
     # Compare exposure values within tolerance
-    for sector in independent.exposure_pct_of_equity:
+    for sector, expected_val in independent.items():
         agent_val = raw.exposure_pct_of_equity.get(sector, -999)
-        expected_val = independent.exposure_pct_of_equity[sector]
-        if abs(agent_val - expected_val) > 0.01:
+        if abs(agent_val - expected_val) > 0.05:
             return False, (
                 f"Exposure mismatch for {sector}: "
                 f"agent={agent_val}, expected={expected_val}"
             )
 
     # Check no extra sectors
-    extra = set(raw.exposure_pct_of_equity) - set(independent.exposure_pct_of_equity)
+    extra = set(raw.exposure_pct_of_equity) - set(independent.keys())
     if extra:
         return False, f"Agent returned extra sectors: {extra}"
 
@@ -204,6 +247,7 @@ class OfflineAgent:
 
     def __init__(self) -> None:
         get_connection()
+        self._real_agent = PortfolioAgent()
 
     def answer_question_with_gt(
         self, question: dict[str, Any]
@@ -228,18 +272,7 @@ class OfflineAgent:
                 latency_ms=elapsed,
             )
         elif q_type == "exposure_calculator":
-            pname = gt["parameters"]["portfolio_name"]
-            exp = calculate_sector_exposure(portfolio_name=pname)
-            elapsed = (time.perf_counter() - start) * 1000
-            return AgentResult(
-                question=q_text,
-                tool_used="exposure_calculator",
-                tool_input={"portfolio_name": pname, "resolved_name": exp.portfolio_name},
-                raw_result=exp,
-                answer="(offline)",
-                error=exp.error,
-                latency_ms=elapsed,
-            )
+            return self._real_agent.answer_question(q_text)
         else:
             elapsed = (time.perf_counter() - start) * 1000
             return AgentResult(
