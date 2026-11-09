@@ -67,6 +67,9 @@ def _get_portfolio_names(conn: sqlite3.Connection) -> list[tuple[int, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
+_GENERIC_WORDS = {"fund", "portfolio", "index", "the", "a", "an", "for", "of"}
+
+
 def _resolve_portfolio(
     conn: sqlite3.Connection,
     name: Optional[str] = None,
@@ -101,24 +104,58 @@ def _resolve_portfolio(
         if p_name.lower() == query.lower():
             return p_id, p_name, ""
 
-    # 2. Substring token match: check if all words in query appear in a portfolio name
-    query_tokens = query.lower().split()
-    for p_id, p_name in all_portfolios:
-        p_lower = p_name.lower()
-        if all(tok in p_lower for tok in query_tokens):
-            return p_id, p_name, ""
+    # 2. Extract non-generic tokens
+    query_tokens = [t for t in query.lower().split() if t not in _GENERIC_WORDS]
+    if not query_tokens:
+        return None, None, (
+            f"Could not resolve portfolio '{query}'. "
+            f"Available portfolios: {', '.join(all_names)}"
+        )
 
-    # 3. Fuzzy match via difflib
-    close = difflib.get_close_matches(
-        query.lower(),
-        [n.lower() for n in all_names],
-        n=1,
-        cutoff=0.5,
-    )
-    if close:
-        for p_id, p_name in all_portfolios:
-            if p_name.lower() == close[0]:
-                return p_id, p_name, ""
+    # 3. Find candidates containing all non-generic query tokens
+    candidates: list[tuple[int, str, list[str]]] = []
+    exact_token_match: Optional[tuple[int, str]] = None
+    for p_id, p_name in all_portfolios:
+        p_tokens = [t for t in p_name.lower().split() if t not in _GENERIC_WORDS]
+        if all(tok in p_tokens for tok in query_tokens):
+            candidates.append((p_id, p_name, p_tokens))
+            if set(query_tokens) == set(p_tokens):
+                exact_token_match = (p_id, p_name)
+
+    # If all non-generic tokens match uniquely and completely
+    if exact_token_match:
+        return exact_token_match[0], exact_token_match[1], ""
+
+    # If partial match or multiple candidates, ask user to clarify / choose
+    if len(candidates) == 1:
+        cand_name = candidates[0][1]
+        return None, None, (
+            f"Ambiguous portfolio name '{query}'. Did you mean: {cand_name}? "
+            f"Please specify the full portfolio name. Available: {', '.join(all_names)}"
+        )
+    elif len(candidates) > 1:
+        cand_names = [c[1] for c in candidates]
+        return None, None, (
+            f"Ambiguous portfolio name '{query}'. Did you mean one of: {', '.join(cand_names)}? "
+            f"Please specify the full portfolio name. Available: {', '.join(all_names)}"
+        )
+
+    # 4. Fuzzy match with cutoff 0.8 ignoring generic words
+    norm_query = " ".join(query_tokens)
+    norm_map = {
+        " ".join([t for t in p[1].lower().split() if t not in _GENERIC_WORDS]): p
+        for p in all_portfolios
+    }
+    close = difflib.get_close_matches(norm_query, list(norm_map.keys()), n=2, cutoff=0.8)
+    if len(close) == 1:
+        matched_p = norm_map[close[0]]
+        return matched_p[0], matched_p[1], ""
+    elif len(close) > 1:
+        cand_names = [norm_map[c][1] for c in close]
+        return None, None, (
+            f"Ambiguous portfolio name '{query}'. Did you mean one of: {', '.join(cand_names)}? "
+            f"Available: {', '.join(all_names)}"
+        )
 
     return None, None, (
         f"Could not resolve portfolio '{query}'. "

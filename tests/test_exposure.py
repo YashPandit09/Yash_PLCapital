@@ -77,3 +77,26 @@ class TestExposureCalculator:
         total = sum(result.exposure_pct_of_equity.values())
         assert abs(total - 100.0) < 0.1
 
+    def test_resolve_international_equity_token_match(self):
+        """'international equity' must still resolve to 'International Equity Fund'."""
+        result = calculate_sector_exposure(portfolio_name="international equity")
+        assert not result.error
+        assert result.portfolio_name == "International Equity Fund"
+
+    def test_resolve_nonexistent_fund_returns_available(self):
+        """'Nonexistent Fund' must return an error listing available portfolios."""
+        result = calculate_sector_exposure(portfolio_name="Nonexistent Fund")
+        assert result.error
+        assert "Could not resolve" in result.error
+        assert "Available portfolios" in result.error
+        assert "Growth Equity Fund" in result.error
+
+    def test_resolve_growth_fund_ambiguous_prompts_choice(self):
+        """Ambiguous name 'Growth fund' must ask the user to choose among candidates, not pick one silently."""
+        result = calculate_sector_exposure(portfolio_name="Growth fund")
+        assert result.error
+        assert "Ambiguous" in result.error
+        assert "Did you mean" in result.error
+        assert "Growth Equity Fund" in result.error
+
+
