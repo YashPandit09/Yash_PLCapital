@@ -329,7 +329,24 @@ Run without consuming API quota:
 
 ---
 
-## Known Limitations & Future Roadmap
+## Prompt Design & Few-Shot Validation
 
-- **Hybrid Questions**: Queries that require both tools simultaneously (e.g., "Find the active high-risk portfolio with the highest AUM and show its sector exposures") currently route to a single tool. A planner-executor pattern could decompose these into sequential tool steps.
-- **Dynamic Database Updates**: The database is presently held in memory from static CSV files. Supporting live persistence with SQLite WAL mode on disk or PostgreSQL would enable real-time transaction ingestion.
+- **Dynamic Runtime Schema**: The Text-to-SQL system prompt does not rely on static, hardcoded column definitions. Instead, it extracts the schema at runtime using `PRAGMA table_info` and dynamic distinct-value sets (`asset_type ∈ {'Stock', 'Bond'}`, risk levels, statuses, and exact portfolio/sector names).
+- **Independent Few-Shot Examples**: All few-shot examples embedded in the SQL prompt are completely distinct from the 10 evaluation questions and test different tables (e.g., BUY transaction volumes, latest risk metric calculations, large-cap stock market capitalizations). Every few-shot query is asserted to execute without syntax or database error in `tests/test_sql_validator.py`.
+- **Ground-Truth Separation**: Earlier iterations included 3-4 simple few-shot examples derived from the assignment ground-truth set; complex queries Q7–Q10 were never included. In the current production release, all few-shot queries are fully independent from the evaluation benchmark.
+
+---
+
+## Known Limitations
+
+1. **Free-Tier API Quota & Rate Limits**:
+   - Google AI Studio free-tier API keys operate under strict rate limits (typically 5 requests per minute and a daily request ceiling per model).
+   - The agent incorporates fail-fast detection: when quota is depleted or daily limits are reached, it immediately informs the user rather than hanging in exponential backoff.
+   - For complete test and evaluation runs without network dependencies or quota consumption, `evaluate.py --offline` and `pytest` provide 100% offline coverage.
+
+2. **Full Table Scan Flags on Tiny Tables**:
+   - The evaluation harness flags full table scans (e.g. `SCAN TABLE portfolios`, `SCAN TABLE holdings`).
+   - SQLite's cost-based query planner intentionally prefers full sequential scans over index lookups on tables with only 13 to 96 rows, because reading contiguous memory pages is faster than traversing index B-trees for small datasets. On larger production tables (100k+ rows), SQLite switches automatically to the defined B-tree indices.
+
+3. **Hybrid Multi-Step Decomposition**:
+   - Multi-intent questions requiring both SQL aggregation across funds and detailed sector exposure breakdown currently resolve via the dominant tool. Future extensions will incorporate a planner-executor agent to chain tool outputs sequentially.
