@@ -130,3 +130,4 @@ if ask_clicked and question:
                 st.info(raw_exp.error or "No equity holdings found.")
         else:
             st.write(result.answer)
+

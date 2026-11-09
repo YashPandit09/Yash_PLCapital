@@ -10,8 +10,9 @@ from __future__ import annotations
 import difflib
 import logging
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Any, Iterator, Optional, Union
 
 from src.db import get_connection
 
@@ -19,8 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ExposureResult:
-    """Result of a sector exposure calculation."""
+class ExposureResult(Mapping):
+    """Result of a sector exposure calculation.
+
+    Implements Mapping (dict-like access) for seamless compatibility
+    with both dictionary indexing (``result['exposure_pct_of_equity']``)
+    and attribute access (``result.exposure_pct_of_equity``).
+    """
     portfolio_name: str = ""
     portfolio_id: int = 0
     exposure_pct_of_equity: dict[str, float] = field(default_factory=dict)
@@ -28,6 +34,29 @@ class ExposureResult:
     equity_weight_total: float = 0.0
     bonds_excluded: int = 0
     error: str = ""
+
+    def __getitem__(self, key: str) -> Any:
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        yield from [
+            "portfolio_name",
+            "portfolio_id",
+            "exposure_pct_of_equity",
+            "exposure_pct_of_portfolio",
+            "equity_weight_total",
+            "bonds_excluded",
+            "error",
+        ]
+
+    def __len__(self) -> int:
+        return 7
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return results as a plain dictionary."""
+        return {k: getattr(self, k) for k in self}
 
 
 def _get_portfolio_names(conn: sqlite3.Connection) -> list[tuple[int, str]]:

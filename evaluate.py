@@ -388,6 +388,10 @@ def evaluate(
             "cost_proxy": cost_info,
         })
 
+        # Polite delay between live queries to respect Gemini Free Tier 5 RPM quota
+        if not offline and agent_result.tool_used == "sql_query" and q != questions[-1]:
+            time.sleep(10.0)
+
     # ── Summary ──
     total = pass_count + fail_count
     accuracy = (pass_count / total * 100) if total > 0 else 0

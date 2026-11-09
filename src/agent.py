@@ -237,33 +237,39 @@ class PortfolioAgent:
         return result
 
     def _route(self, question: str) -> tuple[str, Optional[str]]:
-        """Use Gemini to route the question to the appropriate tool."""
-        import json
-
-        if not is_available():
-            # Fallback heuristic routing when no API key
-            return self._heuristic_route(question)
-
-        try:
-            raw = generate(question, system_instruction=_ROUTER_SYSTEM)
-            # Parse JSON from response
-            # Handle cases where LLM wraps in markdown
-            text = raw.strip()
-            if text.startswith("```"):
-                lines = text.split("\n")
-                lines = [l for l in lines if not l.strip().startswith("```")]
-                text = "\n".join(lines).strip()
-
-            data = json.loads(text)
-            tool = data.get("tool", "sql_query")
-            pname = data.get("portfolio_name")
-            if tool not in ("sql_query", "exposure_calculator", "none"):
-                tool = "sql_query"
+        """Route question based on domain routing rule, preserving API quota."""
+        # 1. Check exposure keywords per assignment rules
+        tool, pname = self._heuristic_route(question)
+        if tool == "exposure_calculator":
             return tool, pname
 
-        except (json.JSONDecodeError, RuntimeError) as exc:
-            logger.warning("Router failed, using heuristic: %s", exc)
-            return self._heuristic_route(question)
+        # 2. Check general financial/portfolio data queries
+        q_lower = question.lower()
+        sql_signals = [
+            "how many", "what", "which", "show", "list", "total", "average", "avg",
+            "top", "count", "find", "for each", "portfolio", "holding", "security",
+            "aum", "price", "sector", "risk", "performance", "return", "transaction",
+            "cost", "diversification", "fund"
+        ]
+        if any(sig in q_lower for sig in sql_signals):
+            return "sql_query", None
+
+        # 3. For ambiguous queries, use Gemini router if available
+        if is_available():
+            try:
+                import json
+                raw = generate(question, system_instruction=_ROUTER_SYSTEM)
+                text = raw.strip()
+                if text.startswith("```"):
+                    lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
+                    text = "\n".join(lines).strip()
+                data = json.loads(text)
+                t = data.get("tool", "sql_query")
+                return (t, data.get("portfolio_name")) if t in ("sql_query", "exposure_calculator", "none") else ("sql_query", None)
+            except Exception as exc:
+                logger.warning("Router LLM failed, using fallback: %s", exc)
+
+        return "none", None
 
     @staticmethod
     def _heuristic_route(question: str) -> tuple[str, Optional[str]]:
