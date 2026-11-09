@@ -32,3 +32,4 @@ def test_candidate_models_custom_env(monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
     models = _get_candidate_models()
     assert models[0] == "gemini-2.5-pro"
+
