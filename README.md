@@ -275,11 +275,30 @@ Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
 ## Evaluation Results
 
 > [!IMPORTANT]
-> **Evaluation Transparency & Model Lineage**:
-> - **Groq Live Run (`openai/gpt-oss-120b` / `llama-3.3-70b-versatile`)**: Executed with `LLM_PROVIDER=groq` using the OpenAI-compatible Groq API endpoint.
-> - **Gemini Live Run (`gemini-3.5-flash-lite`)**: Executed with `LLM_PROVIDER=gemini` on the dynamic runtime schema and generic un-overfitted prompt.
-> - **Initial Baseline Run (`gemini-3.5-flash`)**: Live 10/10 was recorded on an earlier prompt version prior to the strict separation of few-shot examples and removal of formatting rules.
-> - **Offline Mode (Harness Check)**: Validates the harness, database schema, SQL execution, query plans, and independent exposure calculations without network dependencies, but does not test real-time LLM SQL generation.
+> **Evaluation Transparency & Dual-Score Methodology**:
+> The evaluation harness supports two complementary scoring modes:
+> 1. **Strict Evaluation (Headline Score)**: Requires exact column count, matching data types, and strict tuple matching. Enforces row order whenever ground-truth SQL contains `ORDER BY`.
+> 2. **Lenient Evaluation (Flexible Score)**: Added after observing real-world LLM variations on natural language prompts to measure semantic correctness without overfitting to ground-truth SQL aliases:
+>    - **Rule (a) - Column Subset**: Extra columns are allowed as long as every expected column's values appear in some candidate column projection.
+>    - **Rule (b) - Pragmatic Ordering**: Row order is strictly validated only when the query has a `LIMIT` clause or the question explicitly requests ordering (`top`, `highest`, `lowest`, `rank`, `sort`, `order`). Unordered aggregations (e.g. Q6 sector prices) are compared as multisets.
+
+### Provider & Model Comparison
+
+| Evaluation Run | Provider | Model | Strict Score (Headline) | Lenient Score | Notes |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| **Harness Sanity Check** | Offline (No LLM) | Ground-Truth SQL | **10/10 (100%)** | **10/10 (100%)** | Validates schema, DB indices & deterministic math |
+| **Baseline Run** | Google Gemini | `gemini-3.5-flash` | **10/10 (100%)** | **10/10 (100%)** | Earlier tuned prompt before separation of few-shots |
+| **Gemini Live Run** | Google Gemini | `gemini-3.5-flash-lite` | **6/10 (60%)** | **7/10 (70%)** | Cleaned generic prompt; Q6 passes lenient |
+| **Groq Live Run** | Groq (OpenAI-compatible) | `openai/gpt-oss-120b` | **6/10 (60%)** | **7/10 (70%)** | Q1-Q4, Q9, Q10 pass strict; Q6 passes lenient |
+
+---
+
+### Error Analysis on Complex Queries (Q7 & Q8)
+
+- **Q7 (Technology Exposure & Total Value)**: Natural language asks for the total value of Technology holdings and their percentage of total portfolio value. Queries diverge on two dimensions: (1) calculating total portfolio value from dynamic holding market value `SUM(quantity * current_price)` versus the static column `portfolios.total_aum`, and (2) whether to return all portfolios (13 rows with `LEFT JOIN`, displaying 0% for funds without Tech) or only portfolios with active technology holdings (8 rows with `INNER JOIN`).
+- **Q8 (Diversification Metrics Ambiguity)**: The user question asks to "show their diversification metrics" for portfolios invested in >5 sectors. Without an industry-standard formula specified in the prompt, models select diverse metrics such as `portfolio_market_value`, `holding_count`, and `sector_count`. The ground truth requires a specific derived column `diversification_ratio = sector_count / total_holdings` which is not described in the question text.
+
+---
 
 ### 1. Harness Sanity Check (Offline Mode – 10/10 PASS)
 Validates query correctness, schema alignment, and independent result calculation without network dependencies:
@@ -330,13 +349,12 @@ Q10 [medium] (exposure_calculator): Calculate the sector exposure breakdown for 
 ================================================================================
   SUMMARY
 ================================================================================
-  Overall: 10/10 (100%)
-  text2sql: 8/8
-  exposure_calculator: 2/2
-  easy: 3/3
-  hard: 2/2
-  medium: 5/5
-  SQL Optimization: 4/8 queries optimal, 4 flagged for table scans
+  Strict Accuracy (Headline):  10/10 (100%)
+  Lenient Accuracy (Flexible): 10/10 (100%)
+  text2sql (Strict):           8/8
+  text2sql (Lenient):          8/8
+  exposure_calculator:         2/2
+  SQL Optimization:            4/8 queries optimal, 4 flagged for table scans
 ================================================================================
 ```
 

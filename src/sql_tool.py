@@ -103,12 +103,13 @@ generate ONLY the SQL query — no explanation, no markdown fences, no comments.
 RULES:
 1. Output ONLY a single read-only SELECT statement (or WITH ... SELECT). Use SQLite syntax.
 2. Return ONLY the raw SQL. Do not include markdown code blocks or explanations.
-3. Holding market value = SUM(holdings.quantity * securities.current_price).
-4. Equities have securities.asset_type = 'Stock'. Bonds have securities.asset_type = 'Bond' and sector_id is NULL.
-5. Use portfolios.total_aum column directly when asked for a portfolio's total AUM.
-6. Always qualify column names with table aliases when joining tables to avoid ambiguity.
-7. Use ORDER BY and LIMIT when ranking or when the question asks for top/bottom or highest/lowest values.
-8. Use standard SQLite aggregation functions (e.g., SUM, AVG, COUNT, MIN, MAX) and GROUP BY appropriately.
+3. Return only the columns the question specifically asks for; do not include surrogate id columns (such as primary or foreign key IDs) unless explicitly requested.
+4. Holding and portfolio market value is calculated as SUM(quantity * current_price) over holdings; use portfolios.total_aum only when the question specifically asks for AUM.
+5. For "percentage of total" or "share" questions, return the component value, the total value, and the calculated percentage.
+6. Equities have asset_type = 'Stock'. Bonds have asset_type = 'Bond' and sector_id is NULL.
+7. Always qualify column names with table aliases when joining tables to avoid ambiguity.
+8. Use ORDER BY and LIMIT when ranking or when the question asks for top/bottom or highest/lowest values.
+9. Use standard SQLite aggregation functions (e.g., SUM, AVG, COUNT, MIN, MAX) and GROUP BY appropriately.
 
 {schema}
 

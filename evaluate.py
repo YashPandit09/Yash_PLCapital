@@ -73,11 +73,13 @@ def _normalize_value(val: Any) -> Any:
     """Normalize a single value for comparison."""
     if val is None:
         return None
-    if isinstance(val, float):
-        return round(val, 2)
+    if isinstance(val, (int, float)):
+        f = float(val)
+        return int(f) if f.is_integer() else round(f, 2)
     if isinstance(val, str):
         try:
-            return round(float(val), 2)
+            f = float(val)
+            return int(f) if f.is_integer() else round(f, 2)
         except (ValueError, TypeError):
             return val.strip()
     return val
@@ -93,7 +95,7 @@ def _compare_results(
     ground_truth: SQLResult,
     gt_sql: str,
 ) -> tuple[bool, str]:
-    """Compare candidate SQL results against ground-truth results.
+    """Compare candidate SQL results against ground-truth results (Strict Mode).
 
     Rules:
     - Normalize numbers to 2 decimal places.
@@ -129,8 +131,10 @@ def _compare_results(
             return False, (
                 f"Row mismatch (ordered). "
                 f"Got {len(cand_rows)} rows, expected {len(gt_rows)}.\n"
-                f"  First candidate rows: {cand_rows[:3]}\n"
-                f"  First expected rows:  {gt_rows[:3]}"
+                f"  Candidate columns: {candidate.columns}\n"
+                f"  First candidate rows: {cand_rows[:5]}\n"
+                f"  Expected columns:  {ground_truth.columns}\n"
+                f"  First expected rows:  {gt_rows[:5]}"
             )
     else:
         # Multiset comparison
@@ -140,11 +144,77 @@ def _compare_results(
             return False, (
                 f"Row mismatch (unordered). "
                 f"Got {len(cand_rows)} rows, expected {len(gt_rows)}.\n"
-                f"  Candidate (sorted): {sorted(cand_rows, key=str)[:3]}\n"
-                f"  Expected  (sorted): {sorted(gt_rows, key=str)[:3]}"
+                f"  Candidate columns: {candidate.columns}\n"
+                f"  Candidate (sorted): {cand_sorted[:5]}\n"
+                f"  Expected columns:  {ground_truth.columns}\n"
+                f"  Expected  (sorted): {gt_sorted[:5]}"
             )
 
     return True, ""
+
+
+def _compare_lenient(
+    candidate: SQLResult,
+    ground_truth: SQLResult,
+    gt_sql: str,
+    question: str,
+) -> tuple[bool, str]:
+    """Compare candidate SQL results against ground-truth under documented Lenient Rules:
+    (a) Extra columns are allowed if every expected column's values appear in some result column.
+    (b) Row order is compared only if ground-truth SQL has LIMIT or the question contains
+        top/highest/lowest/rank/sort/order.
+    """
+    if candidate.error:
+        return False, f"Candidate query error: {candidate.error}"
+
+    if ground_truth.error:
+        return False, f"Ground truth query error: {ground_truth.error}"
+
+    cand_rows = [_normalize_row(r) for r in candidate.rows]
+    gt_rows = [_normalize_row(r) for r in ground_truth.rows]
+
+    if not cand_rows and not gt_rows:
+        return True, ""
+    if not cand_rows or not gt_rows:
+        return False, f"Row count mismatch: got {len(cand_rows)} rows, expected {len(gt_rows)}"
+
+    m = len(candidate.columns)
+    k = len(ground_truth.columns)
+
+    if m < k:
+        return False, (
+            f"Candidate has fewer columns ({m}) than expected ({k}). "
+            f"Candidate columns: {candidate.columns}, Expected: {ground_truth.columns}"
+        )
+
+    if len(cand_rows) != len(gt_rows):
+        return False, f"Row count mismatch: got {len(cand_rows)} rows, expected {len(gt_rows)}"
+
+    # Rule (b): Row order is compared only if ground-truth SQL has LIMIT
+    # or the question contains top/highest/lowest/rank/sort/order
+    order_keywords = ["top", "highest", "lowest", "rank", "sort", "order"]
+    q_lower = question.lower()
+    has_limit = "LIMIT" in gt_sql.upper()
+    must_order = has_limit or any(kw in q_lower for kw in order_keywords)
+
+    import itertools
+    gt_sorted = sorted(gt_rows, key=str) if not must_order else None
+
+    # Rule (a): Test all length-k permutations of candidate column indices
+    for col_indices in itertools.permutations(range(m), k):
+        proj_rows = [tuple(r[idx] for idx in col_indices) for r in cand_rows]
+        if must_order:
+            if proj_rows == gt_rows:
+                return True, ""
+        else:
+            if sorted(proj_rows, key=str) == gt_sorted:
+                return True, ""
+
+    return False, (
+        f"Lenient match failed: no candidate column projection matched expected values.\n"
+        f"  Candidate columns ({m}): {candidate.columns}\n"
+        f"  Expected columns ({k}): {ground_truth.columns}"
+    )
 
 
 def _compute_independent_exposure(
@@ -314,8 +384,10 @@ def evaluate(
         agent = PortfolioAgent()
 
     results: list[dict[str, Any]] = []
-    pass_count = 0
-    fail_count = 0
+    strict_pass_count = 0
+    strict_fail_count = 0
+    lenient_pass_count = 0
+    lenient_fail_count = 0
 
     # Print header
     print()
@@ -344,41 +416,55 @@ def evaluate(
         expected_tool = "sql_query" if q_type == "text2sql" else "exposure_calculator"
         tool_ok = agent_result.tool_used == expected_tool
 
-        passed = False
-        reason = ""
+        strict_passed = False
+        strict_reason = ""
+        lenient_passed = False
+        lenient_reason = ""
 
         if not tool_ok:
-            reason = (
+            strict_reason = (
                 f"Wrong tool: used '{agent_result.tool_used}', "
                 f"expected '{expected_tool}'"
             )
+            lenient_reason = strict_reason
         elif q_type == "text2sql":
             # Execute ground-truth SQL
             gt_result = execute_ground_truth_sql(gt["sql_query"])
             candidate = agent_result.raw_result
             if isinstance(candidate, SQLResult):
-                passed, reason = _compare_results(candidate, gt_result, gt["sql_query"])
+                strict_passed, strict_reason = _compare_results(candidate, gt_result, gt["sql_query"])
+                lenient_passed, lenient_reason = _compare_lenient(candidate, gt_result, gt["sql_query"], q_text)
             else:
-                reason = "Agent did not return SQLResult"
+                strict_reason = "Agent did not return SQLResult"
+                lenient_reason = strict_reason
         elif q_type == "exposure_calculator":
             gt_pname = gt["parameters"]["portfolio_name"]
-            # Check portfolio resolution
             tool_input = agent_result.tool_input or {}
             resolved = tool_input.get("resolved_name", "") if isinstance(tool_input, dict) else ""
             if resolved and resolved != gt_pname:
-                # Allow as long as it's the same portfolio (fuzzy match resolves correctly)
-                # Just verify the numbers
                 pass
-            passed, reason = _verify_exposure(agent_result, gt_pname)
+            strict_passed, strict_reason = _verify_exposure(agent_result, gt_pname)
+            lenient_passed = strict_passed
+            lenient_reason = strict_reason
 
-        status = "PASS" if passed else "FAIL"
-        if passed:
-            pass_count += 1
+        status = "PASS" if strict_passed else "FAIL"
+        if strict_passed:
+            strict_pass_count += 1
         else:
-            fail_count += 1
+            strict_fail_count += 1
 
-        status_icon = "✓" if passed else "✗"
-        print(f"  {status_icon} {status} | tool={agent_result.tool_used} | {agent_result.latency_ms:.0f}ms")
+        if lenient_passed:
+            lenient_pass_count += 1
+        else:
+            lenient_fail_count += 1
+
+        status_icon = "✓" if strict_passed else "✗"
+        if strict_passed:
+            print(f"  {status_icon} PASS | tool={agent_result.tool_used} | {agent_result.latency_ms:.0f}ms")
+        elif lenient_passed:
+            print(f"  {status_icon} FAIL [Lenient: PASS] | tool={agent_result.tool_used} | {agent_result.latency_ms:.0f}ms")
+        else:
+            print(f"  {status_icon} FAIL | tool={agent_result.tool_used} | {agent_result.latency_ms:.0f}ms")
 
         # Query plan cost proxy (bonus enhancement)
         cost_info: Optional[dict[str, Any]] = None
@@ -393,8 +479,10 @@ def evaluate(
                     idx_cnt = cost_info.get("index_lookups", 0)
                     print(f"    [Perf Optimal] Index lookups: {idx_cnt} index scan(s)")
 
-        if not passed and reason:
-            print(f"    Reason: {reason}")
+        if not strict_passed and strict_reason:
+            print(f"    Reason: {strict_reason}")
+            if lenient_passed:
+                print(f"    [Lenient Evaluation: PASS – expected columns/unordered values matched]")
 
         if verbose:
             if agent_result.tool_used == "sql_query" and agent_result.tool_input:
@@ -413,10 +501,13 @@ def evaluate(
             "type": q_type,
             "difficulty": difficulty,
             "status": status,
+            "strict_passed": strict_passed,
+            "lenient_passed": lenient_passed,
             "tool_used": agent_result.tool_used,
             "expected_tool": expected_tool,
             "latency_ms": round(agent_result.latency_ms, 1),
-            "reason": reason if not passed else "",
+            "reason": strict_reason if not strict_passed else "",
+            "lenient_reason": lenient_reason if not lenient_passed else "",
             "agent_sql": agent_result.tool_input if q_type == "text2sql" else None,
             "cost_proxy": cost_info,
         })
@@ -426,21 +517,23 @@ def evaluate(
             time.sleep(10.0)
 
     # ── Summary ──
-    total = pass_count + fail_count
-    accuracy = (pass_count / total * 100) if total > 0 else 0
+    total = strict_pass_count + strict_fail_count
+    strict_acc = (strict_pass_count / total * 100) if total > 0 else 0
+    lenient_acc = (lenient_pass_count / total * 100) if total > 0 else 0
 
     # By type
     sql_results = [r for r in results if r["type"] == "text2sql"]
     exp_results = [r for r in results if r["type"] == "exposure_calculator"]
-    sql_pass = sum(1 for r in sql_results if r["status"] == "PASS")
-    exp_pass = sum(1 for r in exp_results if r["status"] == "PASS")
+    sql_strict_pass = sum(1 for r in sql_results if r["strict_passed"])
+    sql_lenient_pass = sum(1 for r in sql_results if r["lenient_passed"])
+    exp_pass = sum(1 for r in exp_results if r["strict_passed"])
 
     # By difficulty
     diff_stats: dict[str, tuple[int, int]] = {}
     for r in results:
         d = r["difficulty"]
         p, t = diff_stats.get(d, (0, 0))
-        diff_stats[d] = (p + (1 if r["status"] == "PASS" else 0), t + 1)
+        diff_stats[d] = (p + (1 if r["strict_passed"] else 0), t + 1)
 
     # Query performance metrics
     full_scan_count = sum(
@@ -452,26 +545,34 @@ def evaluate(
     print("=" * 80)
     print("  SUMMARY")
     print("=" * 80)
-    print(f"  Overall: {pass_count}/{total} ({accuracy:.0f}%)")
-    print(f"  text2sql: {sql_pass}/{len(sql_results)}")
-    print(f"  exposure_calculator: {exp_pass}/{len(exp_results)}")
+    print(f"  Strict Accuracy (Headline):  {strict_pass_count}/{total} ({strict_acc:.0f}%)")
+    print(f"  Lenient Accuracy (Flexible): {lenient_pass_count}/{total} ({lenient_acc:.0f}%)")
+    print(f"  text2sql (Strict):           {sql_strict_pass}/{len(sql_results)}")
+    print(f"  text2sql (Lenient):          {sql_lenient_pass}/{len(sql_results)}")
+    print(f"  exposure_calculator:         {exp_pass}/{len(exp_results)}")
     for d in sorted(diff_stats):
         p, t = diff_stats[d]
-        print(f"  {d}: {p}/{t}")
+        print(f"  {d} (Strict):        {p}/{t}")
     if sql_results:
-        print(f"  SQL Optimization: {indexed_count}/{len(sql_results)} queries optimal, {full_scan_count} flagged for table scans")
+        print(f"  SQL Optimization:            {indexed_count}/{len(sql_results)} queries optimal, {full_scan_count} flagged for table scans")
     print("=" * 80)
     print()
 
     report = {
         "summary": {
             "total": total,
-            "passed": pass_count,
-            "failed": fail_count,
-            "accuracy_pct": round(accuracy, 1),
-            "text2sql": f"{sql_pass}/{len(sql_results)}",
+            "passed": strict_pass_count,
+            "failed": strict_fail_count,
+            "strict_passed": strict_pass_count,
+            "strict_failed": strict_fail_count,
+            "strict_accuracy_pct": round(strict_acc, 1),
+            "lenient_passed": lenient_pass_count,
+            "lenient_failed": lenient_fail_count,
+            "lenient_accuracy_pct": round(lenient_acc, 1),
+            "text2sql_strict": f"{sql_strict_pass}/{len(sql_results)}",
+            "text2sql_lenient": f"{sql_lenient_pass}/{len(sql_results)}",
             "exposure_calculator": f"{exp_pass}/{len(exp_results)}",
-            "by_difficulty": {d: f"{p}/{t}" for d, (p, t) in diff_stats.items()},
+            "by_difficulty_strict": {d: f"{p}/{t}" for d, (p, t) in diff_stats.items()},
             "sql_performance": {
                 "total_sql_queries": len(sql_results),
                 "indexed_queries": indexed_count,
@@ -543,8 +644,8 @@ def main() -> None:
         question_ids=question_ids,
     )
 
-    # Exit code 1 if any failure
-    if report["summary"]["failed"] > 0:
+    # Exit code 1 if any headline strict failure
+    if report["summary"].get("strict_failed", 0) > 0:
         sys.exit(1)
 
 
