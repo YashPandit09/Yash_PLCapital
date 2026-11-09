@@ -65,3 +65,25 @@ class TestSQLValidator:
         ok, err = validate_sql("SELECT 1;")
         assert ok
 
+    def test_few_shot_sql_validity_and_execution(self):
+        """Verify that every few-shot example in the prompt is safe and executes on the real DB."""
+        from src.db import get_connection
+        from src.sql_tool import FEW_SHOT_EXAMPLES
+
+        conn = get_connection()
+        assert len(FEW_SHOT_EXAMPLES) >= 3
+
+        for question, sql in FEW_SHOT_EXAMPLES:
+            # 1. Must pass safety validation
+            is_valid, err = validate_sql(sql)
+            assert is_valid, f"Few-shot SQL failed validation for question '{question}': {err}"
+
+            # 2. Must execute without error on the actual in-memory database
+            try:
+                cursor = conn.execute(sql)
+                rows = cursor.fetchall()
+                assert rows is not None, f"Query returned None for '{question}'"
+            except Exception as exc:
+                pytest.fail(f"Few-shot SQL execution error for question '{question}': {exc}")
+
+

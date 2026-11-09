@@ -98,6 +98,10 @@ def get_connection() -> sqlite3.Connection:
     return _connection
 
 
+# Alias for compatibility with external harnesses
+build_database = get_connection
+
+
 def get_schema_description() -> str:
     """Return a compact text description of the database schema for LLM context.
 

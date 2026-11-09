@@ -74,50 +74,57 @@ def _explain_check(conn: sqlite3.Connection, sql: str) -> tuple[bool, str]:
 # System prompt for Text-to-SQL
 # ──────────────────────────────────────────────
 
+FEW_SHOT_EXAMPLES: list[tuple[str, str]] = [
+    (
+        "What is the total dollar volume for BUY transactions?",
+        "SELECT SUM(quantity * price) AS total_buy_volume FROM transactions WHERE transaction_type = 'BUY'",
+    ),
+    (
+        "List all portfolios and their latest beta from the risk metrics table",
+        "SELECT p.portfolio_name, r.beta, r.calculation_date FROM portfolios p JOIN risk_metrics r ON p.portfolio_id = r.portfolio_id WHERE r.calculation_date = (SELECT MAX(rm.calculation_date) FROM risk_metrics rm WHERE rm.portfolio_id = r.portfolio_id)",
+    ),
+    (
+        "Find the top 5 largest market cap stocks",
+        "SELECT symbol, company_name, market_cap FROM securities WHERE asset_type = 'Stock' ORDER BY market_cap DESC LIMIT 5",
+    ),
+    (
+        "Show portfolios with a Sharpe ratio greater than 1.0 along with the performance date",
+        "SELECT p.portfolio_name, pp.sharpe_ratio, pp.performance_date FROM portfolios p JOIN portfolio_performance pp ON p.portfolio_id = pp.portfolio_id WHERE pp.sharpe_ratio > 1.0",
+    ),
+    (
+        "What is the average coupon rate for bonds maturing after 2025?",
+        "SELECT AVG(coupon_rate) AS avg_coupon FROM securities WHERE asset_type = 'Bond' AND maturity_date > '2025-12-31'",
+    ),
+]
+
 _SYSTEM_PROMPT_TEMPLATE = """You are a SQLite SQL expert. Given a natural-language question about portfolio data,
 generate ONLY the SQL query — no explanation, no markdown fences, no comments.
 
 RULES:
-1. Output ONLY a single SELECT statement (or WITH ... SELECT). SQLite syntax.
-2. No trailing semicolons or explanations after the SQL.
-3. "Portfolio value" or "holding value" = SUM(holdings.quantity * securities.current_price)
-4. Use exact portfolio_name / sector_name text from the DB. Use LIKE / LOWER() for loose matching.
-5. Bonds (asset_type='Bond') have NULL sector_id. Use INNER JOIN to sectors ONLY when sector info is needed.
-6. For "total AUM", use portfolios.total_aum column directly.
-7. Always qualify ambiguous column names with table aliases.
-8. Use ORDER BY when the question asks for "top", "highest", "lowest", or ranking. When aggregating across sectors or portfolios (e.g. average price, percentage, ratio), ORDER BY that calculated metric DESC by default.
-9. Use LIMIT when the question specifies a number of results.
-10. When asked for a sector's percentage of total portfolio value across portfolios, compute both the sector holding value and total portfolio value using CTEs. Use INNER JOIN between the two CTEs so only portfolios with non-zero holdings in that sector are included, selecting: portfolio_name, sector_value, total_value, and the percentage rounded to 2 decimal places (e.g. ROUND((sector_value / total_value) * 100, 2)), ordered by percentage DESC.
-11. When asked for portfolio diversification metrics across sectors, compute distinct equity sectors (asset_type='Stock') and total holdings count, calculating the diversification ratio as ROUND(CAST(sector_count AS REAL) / total_holdings, 3), and select portfolio_name, sector_count, total_holdings, and diversification_ratio, ordered by diversification_ratio DESC.
+1. Output ONLY a single read-only SELECT statement (or WITH ... SELECT). Use SQLite syntax.
+2. Return ONLY the raw SQL. Do not include markdown code blocks or explanations.
+3. Holding market value = SUM(holdings.quantity * securities.current_price).
+4. Equities have securities.asset_type = 'Stock'. Bonds have securities.asset_type = 'Bond' and sector_id is NULL.
+5. Use portfolios.total_aum column directly when asked for a portfolio's total AUM.
+6. Always qualify column names with table aliases when joining tables to avoid ambiguity.
+7. Use ORDER BY and LIMIT when ranking or when the question asks for top/bottom or highest/lowest values.
+8. Use standard SQLite aggregation functions (e.g., SUM, AVG, COUNT, MIN, MAX) and GROUP BY appropriately.
 
 {schema}
 
 FEW-SHOT EXAMPLES:
 
-Q: How many portfolios do we have in total?
-A: SELECT COUNT(*) FROM portfolios
-
-Q: What are the names of all active portfolios?
-A: SELECT portfolio_name FROM portfolios WHERE status = 'Active'
-
-Q: Which securities are in the Technology sector?
-A: SELECT s.symbol, s.company_name FROM securities s JOIN sectors sec ON s.sector_id = sec.sector_id WHERE sec.sector_name = 'Technology'
-
-Q: What is the total Assets Under Management (AUM) for portfolios with high target risk level?
-A: SELECT SUM(total_aum) FROM portfolios WHERE target_risk_level = 'High'
-
-Q: Show me the top 5 holdings by cost basis in the Growth Equity Fund
-A: SELECT h.holding_id, s.symbol, s.company_name, h.quantity, h.cost_basis FROM holdings h JOIN securities s ON h.security_id = s.security_id JOIN portfolios p ON h.portfolio_id = p.portfolio_id WHERE p.portfolio_name = 'Growth Equity Fund' ORDER BY h.cost_basis DESC LIMIT 5
-
-Q: What is the average current price of securities in each sector?
-A: SELECT sec.sector_name, AVG(s.current_price) as avg_price FROM securities s JOIN sectors sec ON s.sector_id = sec.sector_id GROUP BY sec.sector_name ORDER BY avg_price DESC
+{few_shots}
 """
 
 
 def _build_system_prompt() -> str:
-    """Build the system prompt with the current schema description."""
+    """Build the system prompt with the runtime schema description and few-shot examples."""
     schema = get_schema_description()
-    return _SYSTEM_PROMPT_TEMPLATE.format(schema=schema)
+    few_shots_text = "\n\n".join(
+        f"Q: {q}\nA: {sql}" for q, sql in FEW_SHOT_EXAMPLES
+    )
+    return _SYSTEM_PROMPT_TEMPLATE.format(schema=schema, few_shots=few_shots_text)
 
 
 def _strip_sql(raw: str) -> str:
