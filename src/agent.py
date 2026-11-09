@@ -68,8 +68,8 @@ Examples:
 Q: How many portfolios do we have?
 {"tool": "sql_query", "portfolio_name": null}
 
-Q: What are the sector exposures for the Tech Innovation Fund?
-{"tool": "exposure_calculator", "portfolio_name": "Tech Innovation Fund"}
+Q: What are the sector exposures for the ESG Sustainable Fund?
+{"tool": "exposure_calculator", "portfolio_name": "ESG Sustainable Fund"}
 
 Q: Calculate the sector exposure breakdown for international equity
 {"tool": "exposure_calculator", "portfolio_name": "international equity"}

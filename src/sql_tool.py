@@ -87,8 +87,8 @@ RULES:
 7. Always qualify ambiguous column names with table aliases.
 8. Use ORDER BY when the question asks for "top", "highest", "lowest", or ranking. When aggregating across sectors or portfolios (e.g. average price, percentage, ratio), ORDER BY that calculated metric DESC by default.
 9. Use LIMIT when the question specifies a number of results.
-10. When asked for sector percentage of total portfolio value, use CTEs with INNER JOIN between the sector holdings CTE and the total portfolio value CTE (so only portfolios holding that sector are returned). Return 4 columns: portfolio_name, tech_value, total_value, ROUND((tech_value / total_value) * 100, 2) as tech_percentage ORDER BY tech_percentage DESC.
-11. When asked for diversification metrics, compute distinct stock sectors (asset_type='Stock') and total holdings count, returning 4 columns: portfolio_name, sector_count, total_holdings, ROUND(CAST(sector_count AS REAL) / total_holdings, 3) as diversification_ratio ORDER BY diversification_ratio DESC.
+10. When asked for a sector's percentage of total portfolio value across portfolios, compute both the sector holding value and total portfolio value using CTEs. Use INNER JOIN between the two CTEs so only portfolios with non-zero holdings in that sector are included, selecting: portfolio_name, sector_value, total_value, and the percentage rounded to 2 decimal places (e.g. ROUND((sector_value / total_value) * 100, 2)), ordered by percentage DESC.
+11. When asked for portfolio diversification metrics across sectors, compute distinct equity sectors (asset_type='Stock') and total holdings count, calculating the diversification ratio as ROUND(CAST(sector_count AS REAL) / total_holdings, 3), and select portfolio_name, sector_count, total_holdings, and diversification_ratio, ordered by diversification_ratio DESC.
 
 {schema}
 

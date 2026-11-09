@@ -42,7 +42,7 @@ class QueryRequest(BaseModel):
         ...,
         min_length=1,
         description="Natural-language question about portfolio analytics.",
-        json_schema_extra={"example": "What are the sector exposures for the Tech Innovation Fund?"},
+        json_schema_extra={"example": "What are the sector exposures for the ESG Sustainable Fund?"},
     )
 
 

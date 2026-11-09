@@ -51,3 +51,4 @@ class TestPortfolioAgent:
     def test_sql_routing_active(self):
         tool, _ = self.agent._route("What are the names of all active portfolios?")
         assert tool == "sql_query"
+
