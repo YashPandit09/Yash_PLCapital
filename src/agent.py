@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -65,21 +66,26 @@ If tool is "exposure_calculator", extract the portfolio name from the question.
 If tool is "sql_query" or "none", set portfolio_name to null.
 
 Examples:
-Q: How many portfolios do we have?
+Q: List all portfolios and their target risk levels
 {"tool": "sql_query", "portfolio_name": null}
 
-Q: What are the sector exposures for the ESG Sustainable Fund?
-{"tool": "exposure_calculator", "portfolio_name": "ESG Sustainable Fund"}
+Q: What is the sector exposure breakdown for the Conservative Income Fund?
+{"tool": "exposure_calculator", "portfolio_name": "Conservative Income Fund"}
 
-Q: Calculate the sector exposure breakdown for international equity
-{"tool": "exposure_calculator", "portfolio_name": "international equity"}
+Q: Calculate sector allocation for the Balanced Portfolio
+{"tool": "exposure_calculator", "portfolio_name": "Balanced Portfolio"}
 
-Q: For each portfolio, show the total value of Technology sector holdings
+Q: Show total transaction fees paid per portfolio
 {"tool": "sql_query", "portfolio_name": null}
 
 Q: What is the weather today?
 {"tool": "none", "portfolio_name": null}
 """
+
+_DANGEROUS_PATTERNS = re.compile(
+    r"\b(DROP\s+TABLE|DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|TRUNCATE\s+TABLE)\b",
+    re.IGNORECASE,
+)
 
 
 # ──────────────────────────────────────────────
@@ -215,7 +221,14 @@ class PortfolioAgent:
 
         result: AgentResult
 
-        if tool_name == "exposure_calculator":
+        if tool_name == "destructive":
+            result = AgentResult(
+                question=q,
+                tool_used="none",
+                error="Destructive operations are not permitted. Only read-only portfolio queries are allowed.",
+                answer="Destructive operations (such as DROP or DELETE) are not permitted. Only read-only portfolio analytics queries are allowed.",
+            )
+        elif tool_name == "exposure_calculator":
             result = self._run_exposure(q, portfolio_name)
         elif tool_name == "hybrid":
             result = self._run_hybrid(q)
@@ -239,24 +252,19 @@ class PortfolioAgent:
         return result
 
     def _route(self, question: str) -> tuple[str, Optional[str]]:
-        """Route question based on domain routing rule, preserving API quota."""
-        # 1. Check exposure keywords per assignment rules
+        """Route question: prefer LLM router with 'none' option; fallback to domain keywords."""
+        q_lower = question.lower()
+
+        # 1. Refuse destructive commands immediately without executing
+        if _DANGEROUS_PATTERNS.search(question):
+            return "destructive", None
+
+        # 2. Check exposure breakdown keywords (deterministic, zero API cost)
         tool, pname = self._heuristic_route(question)
         if tool == "exposure_calculator":
             return tool, pname
 
-        # 2. Check general financial/portfolio data queries
-        q_lower = question.lower()
-        sql_signals = [
-            "how many", "what", "which", "show", "list", "total", "average", "avg",
-            "top", "count", "find", "for each", "portfolio", "holding", "security",
-            "aum", "price", "sector", "risk", "performance", "return", "transaction",
-            "cost", "diversification", "fund"
-        ]
-        if any(sig in q_lower for sig in sql_signals):
-            return "sql_query", None
-
-        # 3. For ambiguous queries, use Gemini router if available
+        # 3. Prefer LLM router for all general / ambiguous queries when available
         if is_available():
             try:
                 import json
@@ -267,28 +275,39 @@ class PortfolioAgent:
                     text = "\n".join(lines).strip()
                 data = json.loads(text)
                 t = data.get("tool", "sql_query")
-                return (t, data.get("portfolio_name")) if t in ("sql_query", "exposure_calculator", "none") else ("sql_query", None)
+                if t in ("sql_query", "exposure_calculator", "none"):
+                    return t, data.get("portfolio_name")
             except Exception as exc:
-                logger.warning("Router LLM failed, using fallback: %s", exc)
+                logger.warning("Router LLM failed, using domain-specific fallback: %s", exc)
 
+        # 4. Fallback heuristics when LLM is unavailable or fails:
+        # Check domain-specific keywords (no generic words like 'what', 'which', 'show')
+        domain_signals = [
+            "portfolio", "holding", "security", "securities", "sector", "aum",
+            "nav", "risk", "sharpe", "beta", "performance", "return", "transaction",
+            "fee", "fees", "bond", "bonds", "stock", "stocks", "coupon", "maturity",
+            "asset", "cost basis", "diversification", "fund"
+        ]
+        if any(sig in q_lower for sig in domain_signals):
+            return "sql_query", None
+
+        # Out-of-domain query
         return "none", None
 
     @staticmethod
     def _heuristic_route(question: str) -> tuple[str, Optional[str]]:
-        """Simple keyword-based routing fallback."""
+        """Domain-specific keyword-based routing fallback for sector exposure."""
         q_lower = question.lower()
         exposure_keywords = [
             "sector exposure", "sector breakdown", "sector allocation",
             "sector weight", "exposure breakdown",
         ]
         if any(kw in q_lower for kw in exposure_keywords):
-            # Try to extract portfolio name (rough heuristic)
-            # Look for text after "for" or "of"
             import re
-            match = re.search(r"(?:for|of)\s+(?:the\s+)?(.+?)(?:\?|$)", q_lower)
+            match = re.search(r"(?:for|of)\s+(?:the\s+)?(.+?)(?:\?|$)", question, re.IGNORECASE)
             pname = match.group(1).strip().rstrip("?. ") if match else None
             return "exposure_calculator", pname
-        return "sql_query", None
+        return "none", None
 
     def _run_sql(self, question: str) -> AgentResult:
         """Run the SQL tool and format the answer."""
