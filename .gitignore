@@ -9,4 +9,5 @@ dist/
 build/
 .pytest_cache/
 eval_report.json
+*.zip
 
