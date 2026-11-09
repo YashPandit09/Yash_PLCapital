@@ -260,43 +260,43 @@ Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
 
 ## Actual Evaluation Output
 
+### Live Evaluation (with Gemini API)
 ```text
 ================================================================================
-  Portfolio Analytics Agent – Evaluation (OFFLINE)
-  Questions: 10
+  Portfolio Analytics Agent – Evaluation (LIVE)
 ================================================================================
 
 Q1 [easy] (text2sql): How many portfolios do we have in total?
-  ✓ PASS | tool=sql_query | 0ms
+  ✓ PASS | tool=sql_query | 4026ms
     [Perf Optimal] Index lookups: 1 index scan(s)
 
 Q2 [easy] (text2sql): What are the names of all active portfolios?
-  ✓ PASS | tool=sql_query | 0ms
+  ✓ PASS | tool=sql_query | 2455ms
     [Perf Alert] Full table scan detected: SCAN portfolios
 
 Q3 [easy] (text2sql): Which securities are in the Technology sector?
-  ✓ PASS | tool=sql_query | 0ms
+  ✓ PASS | tool=sql_query | 3360ms
     [Perf Optimal] Index lookups: 2 index scan(s)
 
 Q4 [medium] (text2sql): What is the total Assets Under Management (AUM) for portfolios with high target risk level?
-  ✓ PASS | tool=sql_query | 0ms
+  ✓ PASS | tool=sql_query | 4053ms
     [Perf Alert] Full table scan detected: SCAN portfolios
 
 Q5 [medium] (text2sql): Show me the top 5 holdings by cost basis in the Growth Equity Fund
-  ✓ PASS | tool=sql_query | 0ms
+  ✓ PASS | tool=sql_query | 4120ms
     [Perf Optimal] Index lookups: 2 index scan(s)
 
 Q6 [medium] (text2sql): What is the average current price of securities in each sector?
-  ✓ PASS | tool=sql_query | 0ms
+  ✓ PASS | tool=sql_query | 13323ms
     [Perf Optimal] Index lookups: 2 index scan(s)
 
 Q7 [hard] (text2sql): For each portfolio, show the total value of Technology sector holdings and what percentage it represents of the total portfolio value
-  ✓ PASS | tool=sql_query | 0ms
-    [Perf Alert] Full table scan detected: SCAN h, SCAN ptv
+  ✓ PASS | tool=sql_query | 14753ms
+    [Perf Alert] Full table scan detected: SCAN th
 
 Q8 [hard] (text2sql): Find portfolios that have holdings in more than 5 different sectors and show their diversification metrics
-  ✓ PASS | tool=sql_query | 0ms
-    [Perf Alert] Full table scan detected: SCAN p, SCAN psc
+  ✓ PASS | tool=sql_query | 17272ms
+    [Perf Optimal] Index lookups: 1 index scan(s)
 
 Q9 [medium] (exposure_calculator): What are the sector exposures for the Tech Innovation Fund?
   ✓ PASS | tool=exposure_calculator | 0ms
@@ -307,16 +307,10 @@ Q10 [medium] (exposure_calculator): Calculate the sector exposure breakdown for 
 ================================================================================
   SUMMARY
 ================================================================================
-  Overall: 10/10 (100%)
-  text2sql: 8/8
-  exposure_calculator: 2/2
-  easy: 3/3
-  hard: 2/2
-  medium: 5/5
-  SQL Optimization: 4/8 queries optimal, 4 flagged for table scans
+  Overall: 10/10 (100% PASS)
+  text2sql: 8/8 (100% PASS)
+  exposure_calculator: 2/2 (100% PASS)
 ================================================================================
-
-Report saved to eval_report.json
 ```
 
 ---
