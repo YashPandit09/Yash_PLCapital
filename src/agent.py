@@ -300,7 +300,8 @@ class PortfolioAgent:
         q_lower = question.lower()
         exposure_keywords = [
             "sector exposure", "sector breakdown", "sector allocation",
-            "sector weight", "exposure breakdown",
+            "sector weight", "exposure breakdown", "exposure for", "exposures for",
+            "exposure of", "exposures of",
         ]
         if any(kw in q_lower for kw in exposure_keywords):
             import re
